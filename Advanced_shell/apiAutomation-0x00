@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# API URL for Pikachu
+API_URL="https://pokeapi.co/api/v2/pokemon/pikachu"
+
+# Make the API request with detailed error handling
+if curl -s -f "$API_URL" -o data.json; then
+    echo "✅ Data successfully saved to data.json"
+    
+    # Pretty-print sample output if jq is available
+    if command -v jq &> /dev/null; then
+        echo "Sample output:"
+        jq . < data.json | head -n 20
+    else
+        echo "First few lines of data.json:"
+        head -n 10 data.json
+    fi
+else
+    # Log the error to errors.txt
+    error_msg="Error: Failed to retrieve data for Pikachu - curl exit code: $? at $(date)"
+    echo "$error_msg" >> errors.txt
+    echo "❌ $error_msg"
+    echo "Error logged to errors.txt"
+    
+    # Clean up empty data.json if created
+    if [ -f data.json ] && [ ! -s data.json ]; then
+        rm data.json
+    fi
+fi
