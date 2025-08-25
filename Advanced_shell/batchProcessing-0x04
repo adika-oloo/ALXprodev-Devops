@@ -1,0 +1,140 @@
+#!/bin/bash
+
+# List of Pokémon to retrieve
+pokemon_list=(
+    "Bulbasaur"
+    "Ivysaur" 
+    "Venusaur"
+    "Charmander"
+    "Charmeleon"
+)
+
+# API base URL
+api_base="https://pokeapi.co/api/v2/pokemon"
+
+# Maximum number of parallel processes
+max_parallel=3
+
+# Delay between batch starts (seconds)
+batch_delay=1
+
+# Create directory for Pokémon data files
+mkdir -p pokemon_data
+
+# Function to fetch a single Pokémon (runs in background)
+fetch_pokemon() {
+    local pokemon=$1
+    local filename=$(echo "$pokemon" | tr '[:upper:]' '[:lower:]')
+    local attempt=1
+    local max_retries=2
+    
+    echo "[$pokemon] Starting fetch process (PID: $$)..."
+    
+    while [ $attempt -le $max_retries ]; do
+        echo "[$pokemon] Attempt $attempt/$max_retries..."
+        
+        # Make API request
+        response=$(curl -s -w "%{http_code}" --max-time 10 "${api_base}/${filename}")
+        local exit_code=$?
+        http_status=${response: -3}
+        content=${response:0:${#response}-3}
+        
+        if [ $exit_code -eq 0 ] && [ "$http_status" -eq 200 ]; then
+            if echo "$content" | jq -e . >/dev/null 2>&1; then
+                echo "$content" > "pokemon_data/${filename}.json"
+                echo "[$pokemon] ✅ Successfully saved data"
+                return 0
+            else
+                echo "[$pokemon] ❌ Invalid JSON response"
+            fi
+        elif [ "$http_status" -eq 404 ]; then
+            echo "[$pokemon] ❌ Pokémon not found"
+            return 1
+        else
+            echo "[$pokemon] ❌ Error (HTTP: $http_status, Curl: $exit_code)"
+        fi
+        
+        attempt=$((attempt + 1))
+        [ $attempt -le $max_retries ] && sleep 2
+    done
+    
+    echo "[$pokemon] ❌ Failed after $max_retries attempts" >> errors.txt
+    return 1
+}
+
+# Function to manage parallel execution
+fetch_in_parallel() {
+    local processes=()
+    local completed=0
+    local total=${#pokemon_list[@]}
+    
+    echo "Starting parallel fetch of $total Pokémon (max $max_parallel concurrent)"
+    echo "========================================"
+    
+    for pokemon in "${pokemon_list[@]}"; do
+        # Wait if we've reached max parallel processes
+        while [ ${#processes[@]} -ge $max_parallel ]; do
+            # Check for completed processes
+            for pid in "${processes[@]}"; do
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    # Process completed, remove from array
+                    processes=("${processes[@]/$pid}")
+                    completed=$((completed + 1))
+                    echo "[Progress: $completed/$total] Waiting for slot..."
+                fi
+            done
+            sleep 0.5
+        done
+        
+        # Start new background process
+        fetch_pokemon "$pokemon" &
+        pid=$!
+        processes+=($pid)
+        echo "[$pokemon] Started process PID: $pid"
+        
+        # Small delay between process starts
+        sleep $batch_delay
+    done
+    
+    # Wait for all remaining processes to complete
+    echo "========================================"
+    echo "All processes started. Waiting for completion..."
+    for pid in "${processes[@]}"; do
+        if wait "$pid" 2>/dev/null; then
+            completed=$((completed + 1))
+            echo "[Progress: $completed/$total] Process $pid completed successfully"
+        else
+            completed=$((completed + 1))
+            echo "[Progress: $completed/$total] Process $pid completed with error"
+        fi
+    done
+}
+
+# Main execution
+main() {
+    echo "=== PARALLEL POKÉMON DATA FETCH ==="
+    echo "Start time: $(date)"
+    echo "========================================"
+    
+    # Clear error log
+    > errors.txt
+    
+    # Start parallel fetch
+    fetch_in_parallel
+    
+    # Generate summary
+    echo "========================================"
+    echo "Fetch completed at: $(date)"
+    echo "Summary:"
+    echo "  Total Pokémon: ${#pokemon_list[@]}"
+    echo "  Successful: $(find pokemon_data -name "*.json" 2>/dev/null | wc -l)"
+    echo "  Errors: $(wc -l < errors.txt 2>/dev/null || echo 0)"
+    echo "  Max parallel processes: $max_parallel"
+    
+    # List all generated files
+    echo "Generated files:"
+    find pokemon_data -name "*.json" 2>/dev/null | xargs -I {} basename {} | sort
+}
+
+# Run main function
+main
