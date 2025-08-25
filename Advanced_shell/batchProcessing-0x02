@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# List of Pokémon to retrieve
+pokemon_list=(
+    "Bulbasaur"
+    "Ivysaur" 
+    "Venusaur"
+    "Charmander"
+    "Charmeleon"
+)
+
+# API base URL
+api_base="https://pokeapi.co/api/v2/pokemon"
+
+# Delay between requests (in seconds) to handle rate limiting
+delay_between_requests=2
+
+# Create directory for Pokémon data files
+mkdir -p pokemon_data
+
+# Loop through each Pokémon in the list
+for pokemon in "${pokemon_list[@]}"; do
+    # Convert to lowercase for filename
+    filename=$(echo "$pokemon" | tr '[:upper:]' '[:lower:]')
+    
+    # Make API request
+    echo "Fetching data for $pokemon..."
+    response=$(curl -s -w "%{http_code}" "${api_base}/${filename}")
+    http_status=${response: -3}
+    content=${response:0:${#response}-3}
+    
+    # Check if request was successful
+    if [ "$http_status" -eq 200 ]; then
+        # Save to file
+        echo "$content" > "pokemon_data/${filename}.json"
+        echo "✅ Successfully saved $pokemon data to pokemon_data/${filename}.json"
+    else
+        # Log error
+        error_msg="Error: HTTP $http_status - Failed to retrieve data for $pokemon at $(date)"
+        echo "$error_msg" >> errors.txt
+        echo "❌ $error_msg"
+    fi
+    
+    # Add delay between requests to avoid rate limiting
+    if [ "$pokemon" != "${pokemon_list[-1]}" ]; then
+        echo "Waiting ${delay_between_requests} seconds before next request..."
+        sleep $delay_between_requests
+    fi
+done
+
+echo "Pokémon data retrieval complete!"
