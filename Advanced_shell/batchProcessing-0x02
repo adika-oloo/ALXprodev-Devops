@@ -7,6 +7,7 @@ pokemon_list=(
     "Venusaur"
     "Charmander"
     "Charmeleon"
+    "InvalidPokemon" # Example of invalid name for testing
 )
 
 # API base URL
@@ -15,37 +16,91 @@ api_base="https://pokeapi.co/api/v2/pokemon"
 # Delay between requests (in seconds) to handle rate limiting
 delay_between_requests=2
 
+# Maximum retry attempts
+max_retries=3
+
 # Create directory for Pokémon data files
 mkdir -p pokemon_data
+
+# Function to make API request with retry logic
+make_api_request() {
+    local pokemon=$1
+    local filename=$2
+    local attempt=1
+    local success=0
+    
+    while [ $attempt -le $max_retries ]; do
+        echo "Attempt $attempt of $max_retries for $pokemon..."
+        
+        # Make API request
+        response=$(curl -s -w "%{http_code}" "${api_base}/${filename}")
+        http_status=${response: -3}
+        content=${response:0:${#response}-3}
+        
+        # Check if request was successful
+        if [ "$http_status" -eq 200 ]; then
+            # Validate JSON response
+            if echo "$content" | jq -e . >/dev/null 2>&1; then
+                echo "$content" > "pokemon_data/${filename}.json"
+                echo "✅ Successfully saved $pokemon data to pokemon_data/${filename}.json"
+                success=1
+                break
+            else
+                echo "❌ Invalid JSON response for $pokemon (attempt $attempt)"
+            fi
+        elif [ "$http_status" -eq 404 ]; then
+            echo "❌ Pokémon '$pokemon' not found (HTTP 404)"
+            break
+        else
+            echo "❌ HTTP Error $http_status for $pokemon (attempt $attempt)"
+        fi
+        
+        # Increment attempt counter
+        attempt=$((attempt + 1))
+        
+        # Add delay before retry (except on last attempt)
+        if [ $attempt -le $max_retries ]; then
+            echo "Waiting 3 seconds before retry..."
+            sleep 3
+        fi
+    done
+    
+    # Log final failure if all attempts exhausted
+    if [ $success -eq 0 ] && [ "$http_status" -ne 404 ]; then
+        error_msg="FATAL: Failed to retrieve data for $pokemon after $max_retries attempts (HTTP $http_status) at $(date)"
+        echo "$error_msg" >> errors.txt
+        echo "❌ $error_msg"
+    elif [ "$http_status" -eq 404 ]; then
+        error_msg="SKIPPED: Pokémon '$pokemon' not found (HTTP 404) at $(date)"
+        echo "$error_msg" >> errors.txt
+        echo "⚠️  $error_msg"
+    fi
+    
+    return $success
+}
 
 # Loop through each Pokémon in the list
 for pokemon in "${pokemon_list[@]}"; do
     # Convert to lowercase for filename
     filename=$(echo "$pokemon" | tr '[:upper:]' '[:lower:]')
     
-    # Make API request
+    echo "========================================"
     echo "Fetching data for $pokemon..."
-    response=$(curl -s -w "%{http_code}" "${api_base}/${filename}")
-    http_status=${response: -3}
-    content=${response:0:${#response}-3}
+    echo "========================================"
     
-    # Check if request was successful
-    if [ "$http_status" -eq 200 ]; then
-        # Save to file
-        echo "$content" > "pokemon_data/${filename}.json"
-        echo "✅ Successfully saved $pokemon data to pokemon_data/${filename}.json"
-    else
-        # Log error
-        error_msg="Error: HTTP $http_status - Failed to retrieve data for $pokemon at $(date)"
-        echo "$error_msg" >> errors.txt
-        echo "❌ $error_msg"
-    fi
+    # Make API request with retry logic
+    make_api_request "$pokemon" "$filename"
     
-    # Add delay between requests to avoid rate limiting
+    # Add delay between different Pokémon requests
     if [ "$pokemon" != "${pokemon_list[-1]}" ]; then
-        echo "Waiting ${delay_between_requests} seconds before next request..."
+        echo "Waiting ${delay_between_requests} seconds before next Pokémon..."
         sleep $delay_between_requests
     fi
+    echo ""
 done
 
 echo "Pokémon data retrieval complete!"
+echo "Summary:"
+echo "========="
+echo "Successful files: $(find pokemon_data -name "*.json" -type f | wc -l)"
+echo "Errors logged: $(wc -l < errors.txt 2>/dev/null || echo 0)"
